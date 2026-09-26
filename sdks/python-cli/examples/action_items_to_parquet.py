@@ -9,9 +9,9 @@ Parquet is the industry-standard columnar storage format optimized for:
   - Seamless ingestion into modern AI data lakes and cloud warehouses
 
 Usage:
-  omi action-items list --json --limit 200 | python action_items_to_parquet.py -o action_items.parquet
+  omi --json action-item list --limit 100 | python action_items_to_parquet.py -o action_items.parquet
   python action_items_to_parquet.py -i export.json -o action_items.parquet --compression zstd
-  python action_items_to_parquet.py --json '[{...}]' --schema
+  python action_items_to_parquet.py --json '[{"id": "task_1", "description": "Buy groceries"}]' --schema
 """
 
 from __future__ import annotations
@@ -23,6 +23,19 @@ import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+
+PARQUET_TYPE_MAP = {
+    "id": "string",
+    "description": "string",
+    "completed": "bool",
+    "created_at": "string",
+    "updated_at": "string",
+    "due_at": "string",
+    "completed_at": "string",
+    "conversation_id": "string",
+    "char_len": "int64",
+    "word_count": "int64",
+}
 
 
 def normalize_iso_timestamp(val: Any) -> Optional[str]:
@@ -56,7 +69,8 @@ def generate_task_hash_id(description: str, created_at: Optional[str]) -> str:
 
 def normalize_action_item_record(raw: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Flatten and normalize a raw Omi action-item dictionary into a typed Parquet row schema.
+    Flatten and normalize a raw Omi action-item dictionary into a typed Parquet row schema
+    matching the official omi_cli.models.ActionItem model.
     """
     description = str(raw.get("description") or raw.get("title") or raw.get("content") or "").strip()
     created_at = normalize_iso_timestamp(raw.get("created_at") or raw.get("createdAt"))
@@ -73,11 +87,6 @@ def normalize_action_item_record(raw: Dict[str, Any]) -> Dict[str, Any]:
     conversation_id = raw.get("conversation_id") or raw.get("conversationId")
     conv_id_str = str(conversation_id).strip() if conversation_id else None
 
-    user_id = str(raw.get("user_id") or raw.get("uid") or "").strip()
-    category = str(raw.get("category") or "general").strip().lower()
-    priority = str(raw.get("priority") or "normal").strip().lower()
-    is_deleted = bool(raw.get("deleted", raw.get("is_deleted", False)))
-
     char_len = len(description)
     word_count = len(description.split()) if description else 0
 
@@ -85,15 +94,11 @@ def normalize_action_item_record(raw: Dict[str, Any]) -> Dict[str, Any]:
         "id": task_id,
         "description": description,
         "completed": completed,
-        "category": category,
-        "priority": priority,
         "created_at": created_at,
         "updated_at": updated_at,
         "due_at": due_at,
         "completed_at": completed_at,
         "conversation_id": conv_id_str,
-        "user_id": user_id,
-        "is_deleted": is_deleted,
         "char_len": char_len,
         "word_count": word_count,
     }
@@ -131,22 +136,7 @@ def parse_omi_action_items(input_data: Union[str, bytes, List[Any], Dict[str, An
 
 def records_to_columnar_dict(records: List[Dict[str, Any]]) -> Dict[str, List[Any]]:
     """Convert a row-oriented list of dicts into columnar arrays for Apache Parquet."""
-    columns: Dict[str, List[Any]] = {
-        "id": [],
-        "description": [],
-        "completed": [],
-        "category": [],
-        "priority": [],
-        "created_at": [],
-        "updated_at": [],
-        "due_at": [],
-        "completed_at": [],
-        "conversation_id": [],
-        "user_id": [],
-        "is_deleted": [],
-        "char_len": [],
-        "word_count": [],
-    }
+    columns: Dict[str, List[Any]] = {k: [] for k in PARQUET_TYPE_MAP}
     for r in records:
         for k in columns:
             columns[k].append(r.get(k))
@@ -169,15 +159,11 @@ def build_pyarrow_table(records: List[Dict[str, Any]]) -> Any:
             ("id", pa.string()),
             ("description", pa.string()),
             ("completed", pa.bool_()),
-            ("category", pa.string()),
-            ("priority", pa.string()),
             ("created_at", pa.string()),
             ("updated_at", pa.string()),
             ("due_at", pa.string()),
             ("completed_at", pa.string()),
             ("conversation_id", pa.string()),
-            ("user_id", pa.string()),
-            ("is_deleted", pa.bool_()),
             ("char_len", pa.int64()),
             ("word_count", pa.int64()),
         ]
@@ -219,22 +205,7 @@ def write_parquet_file(
         col_dict = records_to_columnar_dict(records)
         payload = {
             "format": "columnar_parquet_fallback",
-            "schema": {
-                "id": "string",
-                "description": "string",
-                "completed": "bool",
-                "category": "string",
-                "priority": "string",
-                "created_at": "string",
-                "updated_at": "string",
-                "due_at": "string",
-                "completed_at": "string",
-                "conversation_id": "string",
-                "user_id": "string",
-                "is_deleted": "bool",
-                "char_len": "int64",
-                "word_count": "int64",
-            },
+            "schema": PARQUET_TYPE_MAP,
             "num_rows": len(records),
             "columns": col_dict,
         }
@@ -326,12 +297,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 3. Schema mode
     if args.schema:
-        col_dict = records_to_columnar_dict(records)
         print("Apache Parquet Inferred Schema for Action Items:")
-        for col_name in col_dict:
-            sample_val = col_dict[col_name][0] if col_dict[col_name] else None
-            sample_type = type(sample_val).__name__ if sample_val is not None else "string"
-            print(f"  - {col_name:18s} ({sample_type})")
+        for col_name, parquet_type in PARQUET_TYPE_MAP.items():
+            print(f"  - {col_name:18s} ({parquet_type})")
         print(f"\nTotal records: {len(records)}")
         return 0
 

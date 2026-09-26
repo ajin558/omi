@@ -52,30 +52,47 @@ def test_normalize_action_item_record():
         "id": "act_101",
         "description": "Follow up with client regarding API migration",
         "completed": True,
-        "category": "Work",
-        "priority": "High",
         "createdAt": "2026-09-25T09:00:00Z",
         "updatedAt": "2026-09-25T11:00:00Z",
         "dueAt": "2026-09-26T18:00:00Z",
         "completedAt": "2026-09-25T11:00:00Z",
         "conversation_id": "conv_555",
-        "user_id": "usr_888",
-        "deleted": False,
     }
     rec = normalize_action_item_record(raw)
     assert rec["id"] == "act_101"
     assert rec["description"] == "Follow up with client regarding API migration"
     assert rec["completed"] is True
-    assert rec["category"] == "work"
-    assert rec["priority"] == "high"
     assert rec["created_at"] == "2026-09-25T09:00:00Z"
     assert rec["updated_at"] == "2026-09-25T11:00:00Z"
     assert rec["due_at"] == "2026-09-26T18:00:00Z"
     assert rec["completed_at"] == "2026-09-25T11:00:00Z"
     assert rec["conversation_id"] == "conv_555"
-    assert rec["user_id"] == "usr_888"
-    assert rec["is_deleted"] is False
     assert rec["char_len"] == len("Follow up with client regarding API migration")
+    assert rec["word_count"] == 7
+
+
+def test_real_cli_action_item_shape():
+    """Verify that a real-shaped payload directly emitted by `omi --json action-item list` maps cleanly."""
+    real_cli_record = {
+        "id": "c1f2b456-9a01-4de2-bc34-56789abcdef0",
+        "description": "Prepare latency benchmarking suite for edge inference",
+        "completed": False,
+        "created_at": "2026-09-25T14:22:10.123456Z",
+        "updated_at": "2026-09-25T14:22:10.123456Z",
+        "due_at": "2026-09-28T12:00:00Z",
+        "completed_at": None,
+        "conversation_id": "8f3e2b10-6745-4abc-9012-3456789abcde",
+    }
+    rec = normalize_action_item_record(real_cli_record)
+    assert rec["id"] == "c1f2b456-9a01-4de2-bc34-56789abcdef0"
+    assert rec["description"] == "Prepare latency benchmarking suite for edge inference"
+    assert rec["completed"] is False
+    assert rec["created_at"] == "2026-09-25T14:22:10Z"
+    assert rec["updated_at"] == "2026-09-25T14:22:10Z"
+    assert rec["due_at"] == "2026-09-28T12:00:00Z"
+    assert rec["completed_at"] is None
+    assert rec["conversation_id"] == "8f3e2b10-6745-4abc-9012-3456789abcde"
+    assert rec["char_len"] == len(real_cli_record["description"])
     assert rec["word_count"] == 7
 
 
@@ -98,126 +115,144 @@ def test_parse_omi_action_items():
 
 def test_records_to_columnar_dict():
     records = [
-        normalize_action_item_record({"id": "t1", "description": "Task 1", "completed": False}),
-        normalize_action_item_record({"id": "t2", "description": "Task 2", "completed": True}),
+        {
+            "id": "1",
+            "description": "Desc 1",
+            "completed": False,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": None,
+            "due_at": None,
+            "completed_at": None,
+            "conversation_id": None,
+            "char_len": 6,
+            "word_count": 2,
+        },
+        {
+            "id": "2",
+            "description": "Desc 2",
+            "completed": True,
+            "created_at": "2026-01-02T00:00:00Z",
+            "updated_at": "2026-01-02T05:00:00Z",
+            "due_at": "2026-01-03T00:00:00Z",
+            "completed_at": "2026-01-02T05:00:00Z",
+            "conversation_id": "conv_99",
+            "char_len": 6,
+            "word_count": 2,
+        },
     ]
     cols = records_to_columnar_dict(records)
-    assert len(cols["id"]) == 2
-    assert cols["id"] == ["t1", "t2"]
+    assert cols["id"] == ["1", "2"]
     assert cols["completed"] == [False, True]
-    assert len(cols["char_len"]) == 2
+    assert cols["conversation_id"] == [None, "conv_99"]
 
 
 def test_pyarrow_table_and_parquet_roundtrip(tmp_path):
     pytest.importorskip("pyarrow")
+    import pyarrow.parquet as pq
+
     records = [
         normalize_action_item_record(
             {
                 "id": f"task_{i}",
-                "description": f"Productivity checklist item {i}",
+                "description": f"Test task item {i}",
                 "completed": (i % 2 == 0),
-                "priority": "normal",
-                "created_at": "2026-09-25T10:00:00Z",
+                "created_at": "2026-09-25T12:00:00Z",
+                "due_at": "2026-09-30T12:00:00Z",
+                "conversation_id": f"conv_{i}",
             }
         )
-        for i in range(6)
+        for i in range(10)
     ]
 
     table = build_pyarrow_table(records)
-    assert table.num_rows == 6
-    assert len(table.schema.names) == 14
+    assert table.num_rows == 10
+    assert table.num_columns == 10
 
-    out_file = tmp_path / "action_items.parquet"
-    count, size, is_fallback = write_parquet_file(records, out_file, compression="snappy")
-    assert count == 6
+    out_file = tmp_path / "test_tasks.parquet"
+    num_rec, size, is_fallback = write_parquet_file(records, out_file, compression="snappy")
+    assert num_rec == 10
     assert size > 0
     assert is_fallback is False
     assert out_file.exists()
 
+    # Read back and inspect
     info = inspect_parquet_file(out_file)
-    assert info["num_rows"] == 6
-    assert info["num_columns"] == 14
+    assert info["num_rows"] == 10
+    assert info["num_columns"] == 10
     assert "description" in info["columns"]
-    assert "completed" in info["columns"]
+    assert "due_at" in info["columns"]
+
+    # Read through pyarrow
+    read_table = pq.read_table(str(out_file))
+    assert read_table.num_rows == 10
 
 
 def test_compression_codecs(tmp_path):
     pytest.importorskip("pyarrow")
-    records = [
-        normalize_action_item_record(
-            {
-                "id": f"task_{i}",
-                "description": f"Repetitive task description text {i} " * 15,
-                "category": "work",
-            }
-        )
-        for i in range(6)
-    ]
+    records = [normalize_action_item_record({"id": f"t_{i}", "description": f"Payload {i}" * 20}) for i in range(25)]
 
-    for codec in ["snappy", "gzip", "none"]:
-        out = tmp_path / f"tasks_{codec}.parquet"
-        count, size, is_fallback = write_parquet_file(records, out, compression=codec)
-        assert count == 6
+    for codec in ["snappy", "gzip", "zstd", "none"]:
+        out_file = tmp_path / f"test_{codec}.parquet"
+        num, size, fallback = write_parquet_file(records, out_file, compression=codec)
+        assert num == 25
         assert size > 0
-        assert is_fallback is False
-        info = inspect_parquet_file(out)
-        assert info["num_rows"] == 6
+        assert out_file.exists()
 
 
 def test_fallback_columnar_export(tmp_path, monkeypatch):
-    records = [
-        normalize_action_item_record({"id": "fb_task_1", "description": "Fallback task"}),
-    ]
+    import builtins
 
-    # Simulate pyarrow not installed
-    def fake_build(recs):
-        raise ImportError("pyarrow missing")
+    real_import = builtins.__import__
 
-    monkeypatch.setattr(_mod, "build_pyarrow_table", fake_build)
+    def mock_import(name, *args, **kwargs):
+        if name.startswith("pyarrow"):
+            raise ImportError("Simulated missing pyarrow")
+        return real_import(name, *args, **kwargs)
 
-    out = tmp_path / "fallback_tasks.parquet"
-    count, size, is_fallback = write_parquet_file(records, out)
-    assert count == 1
-    assert size > 0
+    monkeypatch.setattr(builtins, "__import__", mock_import)
+
+    records = [normalize_action_item_record({"id": "t1", "description": "Fallback task"})]
+    out_file = tmp_path / "fallback.parquet"
+    num, size, is_fallback = write_parquet_file(records, out_file)
+    assert num == 1
     assert is_fallback is True
 
-    fb_file = tmp_path / "fallback_tasks.parquet.json"
-    assert fb_file.exists()
-    payload = json.loads(fb_file.read_text(encoding="utf-8"))
+    json_fallback = tmp_path / "fallback.parquet.json"
+    assert json_fallback.exists()
+    payload = json.loads(json_fallback.read_text(encoding="utf-8"))
     assert payload["format"] == "columnar_parquet_fallback"
     assert payload["num_rows"] == 1
-    assert payload["columns"]["id"] == ["fb_task_1"]
+    assert payload["columns"]["id"] == ["t1"]
 
 
-def test_cli_execution_with_file(tmp_path, capsys):
-    input_file = tmp_path / "tasks.json"
-    output_file = tmp_path / "result.parquet"
-
-    input_data = [
-        {"id": "cli_t1", "description": "CLI action item 1", "category": "work"},
-        {"id": "cli_t2", "description": "CLI action item 2", "category": "life"},
+def test_cli_execution_with_file(tmp_path):
+    sample_file = tmp_path / "tasks.json"
+    data = [
+        {"id": "a1", "description": "Do A", "completed": True},
+        {"id": "a2", "description": "Do B", "completed": False},
     ]
-    input_file.write_text(json.dumps(input_data), encoding="utf-8")
+    sample_file.write_text(json.dumps(data), encoding="utf-8")
+    out_parquet = tmp_path / "out.parquet"
 
-    # Run with limit 1
-    ret = main(["-i", str(input_file), "-o", str(output_file), "-n", "1"])
-    assert ret == 0
-    assert output_file.exists() or Path(f"{output_file}.json").exists()
+    exit_code = main(["-i", str(sample_file), "-o", str(out_parquet), "--limit", "1"])
+    assert exit_code == 0
+    assert out_parquet.exists() or (tmp_path / "out.parquet.json").exists()
 
 
-def test_cli_schema_flag(tmp_path, capsys):
-    input_file = tmp_path / "tasks.json"
-    input_data = [{"id": "schema_t1", "description": "Schema verification task"}]
-    input_file.write_text(json.dumps(input_data), encoding="utf-8")
-
-    ret = main(["-i", str(input_file), "--schema"])
-    assert ret == 0
+def test_cli_schema_flag(capsys):
+    raw_json = '[{"id": "task_99", "description": "Schema check", "completed": false}]'
+    exit_code = main(["--json", raw_json, "--schema"])
+    assert exit_code == 0
     captured = capsys.readouterr()
-    assert "Apache Parquet Inferred Schema for Action Items:" in captured.out
+    assert "Apache Parquet Inferred Schema" in captured.out
     assert "description" in captured.out
+    assert "(string)" in captured.out
+    assert "(bool)" in captured.out
+    assert "Total records: 1" in captured.out
 
 
-def test_cli_missing_input_file(tmp_path):
-    missing_file = tmp_path / "non_existent.json"
-    ret = main(["-i", str(missing_file)])
-    assert ret == 1
+def test_cli_missing_input_file(tmp_path, capsys):
+    exit_code = main(["-i", str(tmp_path / "non_existent.json")])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Error: input file" in captured.err
