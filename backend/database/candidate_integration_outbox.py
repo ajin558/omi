@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timedelta, timezone
+import logging
 from typing import Any, Optional, cast
 from uuid import uuid4
 
@@ -20,10 +20,10 @@ from models.task_intelligence import TaskWorkflowControl
 
 logger = logging.getLogger(__name__)
 
-CANDIDATE_INTEGRATION_OUTBOX_COLLECTION = 'candidate_integration_outbox'
+CANDIDATE_INTEGRATION_OUTBOX_COLLECTION = "candidate_integration_outbox"
 # Task intelligence control path constants (aligned with database.candidates)
-TASK_INTELLIGENCE_CONTROL_COLLECTION = 'task_intelligence_control'
-TASK_INTELLIGENCE_CONTROL_DOCUMENT = 'state'
+TASK_INTELLIGENCE_CONTROL_COLLECTION = "task_intelligence_control"
+TASK_INTELLIGENCE_CONTROL_DOCUMENT = "state"
 CANDIDATE_INTEGRATION_POLICY = QueuePolicy(max_attempts=5, base_backoff_seconds=30, max_backoff_seconds=1800)
 
 try:
@@ -32,8 +32,8 @@ try:
         TASK_INTELLIGENCE_CONTROL_DOCUMENT as _TI_DOC,
     )
 
-    assert TASK_INTELLIGENCE_CONTROL_COLLECTION == _TI_COLL, 'Control collection path mismatch with database.candidates'
-    assert TASK_INTELLIGENCE_CONTROL_DOCUMENT == _TI_DOC, 'Control document path mismatch with database.candidates'
+    assert TASK_INTELLIGENCE_CONTROL_COLLECTION == _TI_COLL, "Control collection path mismatch with database.candidates"
+    assert TASK_INTELLIGENCE_CONTROL_DOCUMENT == _TI_DOC, "Control document path mismatch with database.candidates"
 except (ImportError, AttributeError):
     pass
 
@@ -50,17 +50,17 @@ MAX_ERROR_TEXT_LENGTH = 2000
 def _clean_id(id_val: Any) -> str:
     """Validate and sanitize ID strings against injection, null bytes, and path traversal."""
     if not isinstance(id_val, str):
-        return ''
+        return ""
     cleaned = id_val.strip()
     if (
         not cleaned
         or len(cleaned) > MAX_ID_LENGTH
-        or '/' in cleaned
-        or '\\' in cleaned
-        or '..' in cleaned
-        or '\x00' in cleaned
+        or "/" in cleaned
+        or "\\" in cleaned
+        or ".." in cleaned
+        or "\x00" in cleaned
     ):
-        return ''
+        return ""
     return cleaned
 
 
@@ -93,17 +93,17 @@ def _resolve_client(firestore_client: Any = None) -> Any:
 def _integration_outbox_ref(uid: str, candidate_id: str, *, firestore_client: Any = None) -> Any:
     cleaned_uid = _clean_id(uid)
     if not cleaned_uid:
-        raise ValueError(f'Invalid or missing uid: {uid!r}')
+        raise ValueError(f"Invalid or missing uid: {uid!r}")
     cleaned_candidate_id = _clean_id(candidate_id)
     if not cleaned_candidate_id:
-        raise ValueError(f'Invalid or missing candidate_id: {candidate_id!r}')
+        raise ValueError(f"Invalid or missing candidate_id: {candidate_id!r}")
 
     client = _resolve_client(firestore_client)
     if client is None:
-        raise RuntimeError('Firestore client unavailable for _integration_outbox_ref')
+        raise RuntimeError("Firestore client unavailable for _integration_outbox_ref")
 
     return (
-        client.collection('users')
+        client.collection("users")
         .document(cleaned_uid)
         .collection(CANDIDATE_INTEGRATION_OUTBOX_COLLECTION)
         .document(cleaned_candidate_id)
@@ -113,14 +113,14 @@ def _integration_outbox_ref(uid: str, candidate_id: str, *, firestore_client: An
 def _task_control_ref(uid: str, *, firestore_client: Any = None) -> Any:
     cleaned_uid = _clean_id(uid)
     if not cleaned_uid:
-        raise ValueError(f'Invalid or missing uid: {uid!r}')
+        raise ValueError(f"Invalid or missing uid: {uid!r}")
 
     client = _resolve_client(firestore_client)
     if client is None:
-        raise RuntimeError('Firestore client unavailable for _task_control_ref')
+        raise RuntimeError("Firestore client unavailable for _task_control_ref")
 
     return (
-        client.collection('users')
+        client.collection("users")
         .document(cleaned_uid)
         .collection(TASK_INTELLIGENCE_CONTROL_COLLECTION)
         .document(TASK_INTELLIGENCE_CONTROL_DOCUMENT)
@@ -128,9 +128,9 @@ def _task_control_ref(uid: str, *, firestore_client: Any = None) -> Any:
 
 
 def _snapshot_dict(snapshot: Any) -> dict[str, Any]:
-    if hasattr(snapshot, 'exists') and not snapshot.exists:
+    if hasattr(snapshot, "exists") and not snapshot.exists:
         return {}
-    payload = snapshot.to_dict() if hasattr(snapshot, 'to_dict') else snapshot
+    payload = snapshot.to_dict() if hasattr(snapshot, "to_dict") else snapshot
     return cast(dict[str, Any], payload) if isinstance(payload, dict) else {}
 
 
@@ -151,7 +151,7 @@ def claim_candidate_integration_dispatch(
 
     client = _resolve_client(firestore_client)
     if client is None:
-        logger.warning('Firestore client unavailable for claim_candidate_integration_dispatch')
+        logger.warning("Firestore client unavailable for claim_candidate_integration_dispatch")
         return None
 
     try:
@@ -164,65 +164,66 @@ def claim_candidate_integration_dispatch(
 
     def apply(write_transaction: Any) -> Optional[str]:
         snapshot = outbox_ref.get(transaction=write_transaction)
-        if not getattr(snapshot, 'exists', False):
+        if not getattr(snapshot, "exists", False):
             return None
         payload = _snapshot_dict(snapshot)
 
         control = None
         control_snapshot = _task_control_ref(cleaned_uid, firestore_client=client).get(transaction=write_transaction)
-        if getattr(control_snapshot, 'exists', False):
+        if getattr(control_snapshot, "exists", False):
             try:
                 control = parse_snapshot_strict(TaskWorkflowControl, control_snapshot)
             except Exception as exc:
-                logger.error('Failed to parse task workflow control for uid %s: %s', cleaned_uid, exc)
+                logger.error("Failed to parse task workflow control for uid %s: %s", cleaned_uid, exc)
                 write_transaction.update(
                     outbox_ref,
                     {
-                        'status': 'dead_letter',
-                        'dead_letter_reason': 'corrupt_control_document',
-                        'last_error_text': f'Corrupt task workflow control document: {exc}'[:MAX_ERROR_TEXT_LENGTH],
-                        'updated_at': claim_time,
+                        "status": "dead_letter",
+                        "dead_letter_reason": "corrupt_control_document",
+                        "last_error_text": f"Corrupt task workflow control document: {exc}"[:MAX_ERROR_TEXT_LENGTH],
+                        "updated_at": claim_time,
                     },
                 )
                 return None
         else:
             control = TaskWorkflowControl()
 
-        if payload.get('account_generation') != account_generation or control.account_generation != account_generation:
+        if payload.get("account_generation") != account_generation or control.account_generation != account_generation:
             write_transaction.update(
                 outbox_ref,
                 {
-                    'status': 'suppressed',
-                    'resolution_reason': 'account_generation_mismatch',
-                    'updated_at': claim_time,
+                    "status": "suppressed",
+                    "resolution_reason": "account_generation_mismatch",
+                    "updated_at": claim_time,
                 },
             )
             return None
-        if payload.get('status') in {'completed', 'suppressed', 'dead_letter'}:
+        if payload.get("status") in {"completed", "suppressed", "dead_letter"}:
             return None
-        if payload.get('status') == 'processing':
-            claimed_at = _ensure_utc(payload.get('claimed_at'))
+        if payload.get("status") == "processing":
+            claimed_at = _ensure_utc(payload.get("claimed_at"))
             if claimed_at is not None and claimed_at + timedelta(seconds=clamped_lease_seconds) > claim_time:
                 return None
         lease_token = uuid4().hex
         write_transaction.update(
             outbox_ref,
             {
-                'status': 'processing',
-                'attempt_count': int(payload.get('attempt_count', 0)) + 1,
-                'lease_token': lease_token,
-                'claimed_at': claim_time,
-                'updated_at': claim_time,
+                "status": "processing",
+                "attempt_count": int(payload.get("attempt_count", 0)) + 1,
+                "lease_token": lease_token,
+                "claimed_at": claim_time,
+                "updated_at": claim_time,
             },
         )
         return lease_token
 
-    if hasattr(client, 'transaction') and callable(getattr(client, 'transaction')):
-        txn = client.transaction()
-        if hasattr(firestore, 'transactional'):
-            return firestore.transactional(apply)(txn)
-        return apply(txn)
-    return apply(client)
+    if not hasattr(client, "transaction") or not callable(getattr(client, "transaction")):
+        raise RuntimeError("Firestore client does not support transactions; atomic dispatch required")
+
+    txn = client.transaction()
+    if hasattr(firestore, "transactional") and callable(getattr(firestore, "transactional")):
+        return firestore.transactional(apply)(txn)
+    return apply(txn)
 
 
 def complete_candidate_integration_dispatch(
@@ -243,7 +244,7 @@ def complete_candidate_integration_dispatch(
 
     client = _resolve_client(firestore_client)
     if client is None:
-        logger.warning('Firestore client unavailable for complete_candidate_integration_dispatch')
+        logger.warning("Firestore client unavailable for complete_candidate_integration_dispatch")
         return False
 
     completion_time = _ensure_utc(now) or datetime.now(timezone.utc)
@@ -251,82 +252,83 @@ def complete_candidate_integration_dispatch(
 
     def apply(write_transaction: Any) -> bool:
         snapshot = outbox_ref.get(transaction=write_transaction)
-        if not getattr(snapshot, 'exists', False):
+        if not getattr(snapshot, "exists", False):
             return False
         payload = _snapshot_dict(snapshot)
 
         control = None
         control_snapshot = _task_control_ref(cleaned_uid, firestore_client=client).get(transaction=write_transaction)
-        if getattr(control_snapshot, 'exists', False):
+        if getattr(control_snapshot, "exists", False):
             try:
                 control = parse_snapshot_strict(TaskWorkflowControl, control_snapshot)
             except Exception as exc:
-                logger.error('Failed to parse task workflow control for uid %s: %s', cleaned_uid, exc)
+                logger.error("Failed to parse task workflow control for uid %s: %s", cleaned_uid, exc)
                 write_transaction.update(
                     outbox_ref,
                     {
-                        'status': 'dead_letter',
-                        'dead_letter_reason': 'corrupt_control_document',
-                        'last_error_text': f'Corrupt task workflow control document: {exc}'[:MAX_ERROR_TEXT_LENGTH],
-                        'updated_at': completion_time,
+                        "status": "dead_letter",
+                        "dead_letter_reason": "corrupt_control_document",
+                        "last_error_text": f"Corrupt task workflow control document: {exc}"[:MAX_ERROR_TEXT_LENGTH],
+                        "updated_at": completion_time,
                     },
                 )
                 return False
         else:
             control = TaskWorkflowControl()
 
-        if payload.get('account_generation') != account_generation or control.account_generation != account_generation:
+        if payload.get("account_generation") != account_generation or control.account_generation != account_generation:
             write_transaction.update(
                 outbox_ref,
                 {
-                    'status': 'suppressed',
-                    'resolution_reason': 'account_generation_mismatch',
-                    'updated_at': completion_time,
+                    "status": "suppressed",
+                    "resolution_reason": "account_generation_mismatch",
+                    "updated_at": completion_time,
                 },
             )
             return False
-        if payload.get('status') != 'processing' or payload.get('lease_token') != lease_token.strip():
+        if payload.get("status") != "processing" or payload.get("lease_token") != lease_token.strip():
             return False
         if succeeded:
             write_transaction.update(
                 outbox_ref,
                 {
-                    'status': 'completed',
-                    'completed_at': completion_time,
-                    'lease_token': None,
-                    'updated_at': completion_time,
-                    'last_error_text': None,
-                    'dead_letter_reason': None,
+                    "status": "completed",
+                    "completed_at": completion_time,
+                    "lease_token": None,
+                    "updated_at": completion_time,
+                    "last_error_text": None,
+                    "dead_letter_reason": None,
                 },
             )
             return True
 
-        sanitized_error = (error_text or 'integration_failed')[:MAX_ERROR_TEXT_LENGTH]
+        sanitized_error = (error_text or "integration_failed")[:MAX_ERROR_TEXT_LENGTH]
         decision = decide_attempt(
-            attempt_count=max(int(payload.get('attempt_count') or 0), 1),
-            outcome=ProcessOutcome.retry(sanitized_error, reason='integration_failed'),
+            attempt_count=max(int(payload.get("attempt_count") or 0), 1),
+            outcome=ProcessOutcome.retry(sanitized_error, reason="integration_failed"),
             policy=CANDIDATE_INTEGRATION_POLICY,
             now=completion_time,
         )
         patch = {
-            'status': 'dead_letter' if decision.terminal else 'failed',
-            'completed_at': None,
-            'lease_token': None,
-            'updated_at': completion_time,
-            'last_error_text': decision.error_text,
-            'dead_letter_reason': decision.reason if decision.terminal else None,
+            "status": "dead_letter" if decision.terminal else "failed",
+            "completed_at": None,
+            "lease_token": None,
+            "updated_at": completion_time,
+            "last_error_text": decision.error_text,
+            "dead_letter_reason": decision.reason if decision.terminal else None,
         }
         if decision.available_at is not None:
-            patch['available_at'] = decision.available_at
+            patch["available_at"] = decision.available_at
         write_transaction.update(outbox_ref, patch)
         return True
 
-    if hasattr(client, 'transaction') and callable(getattr(client, 'transaction')):
-        txn = client.transaction()
-        if hasattr(firestore, 'transactional'):
-            return firestore.transactional(apply)(txn)
-        return apply(txn)
-    return apply(client)
+    if not hasattr(client, "transaction") or not callable(getattr(client, "transaction")):
+        raise RuntimeError("Firestore client does not support transactions; atomic dispatch required")
+
+    txn = client.transaction()
+    if hasattr(firestore, "transactional") and callable(getattr(firestore, "transactional")):
+        return firestore.transactional(apply)(txn)
+    return apply(txn)
 
 
 def redrive_candidate_integration_dead_letter(
@@ -345,7 +347,7 @@ def redrive_candidate_integration_dead_letter(
 
     client = _resolve_client(firestore_client)
     if client is None:
-        logger.warning('Firestore client unavailable for redrive_candidate_integration_dead_letter')
+        logger.warning("Firestore client unavailable for redrive_candidate_integration_dead_letter")
         return False
 
     completion_time = _ensure_utc(now) or datetime.now(timezone.utc)
@@ -353,22 +355,23 @@ def redrive_candidate_integration_dead_letter(
 
     def apply(write_transaction: Any) -> bool:
         snapshot = outbox_ref.get(transaction=write_transaction)
-        if not getattr(snapshot, 'exists', False):
+        if not getattr(snapshot, "exists", False):
             return False
         payload = _snapshot_dict(snapshot)
-        if payload.get('account_generation') != account_generation:
+        if payload.get("account_generation") != account_generation:
             return False
-        if payload.get('status') != 'dead_letter':
+        if payload.get("status") != "dead_letter":
             return False
         write_transaction.update(outbox_ref, redrive_patch(now=completion_time))
         return True
 
-    if hasattr(client, 'transaction') and callable(getattr(client, 'transaction')):
-        txn = client.transaction()
-        if hasattr(firestore, 'transactional'):
-            return firestore.transactional(apply)(txn)
-        return apply(txn)
-    return apply(client)
+    if not hasattr(client, "transaction") or not callable(getattr(client, "transaction")):
+        raise RuntimeError("Firestore client does not support transactions; atomic dispatch required")
+
+    txn = client.transaction()
+    if hasattr(firestore, "transactional") and callable(getattr(firestore, "transactional")):
+        return firestore.transactional(apply)(txn)
+    return apply(txn)
 
 
 def dead_letter_malformed_candidate_integration(
@@ -388,40 +391,41 @@ def dead_letter_malformed_candidate_integration(
 
     client = _resolve_client(firestore_client)
     if client is None:
-        logger.warning('Firestore client unavailable for dead_letter_malformed_candidate_integration')
+        logger.warning("Firestore client unavailable for dead_letter_malformed_candidate_integration")
         return False
 
     completion_time = _ensure_utc(now) or datetime.now(timezone.utc)
     outbox_ref = _integration_outbox_ref(cleaned_uid, cleaned_candidate_id, firestore_client=client)
-    sanitized_error = (error_text or 'malformed')[:MAX_ERROR_TEXT_LENGTH]
+    sanitized_error = (error_text or "malformed")[:MAX_ERROR_TEXT_LENGTH]
 
     def apply(write_transaction: Any) -> bool:
         snapshot = outbox_ref.get(transaction=write_transaction)
-        if not getattr(snapshot, 'exists', False):
+        if not getattr(snapshot, "exists", False):
             return False
         payload = _snapshot_dict(snapshot)
-        if payload.get('account_generation') != account_generation:
+        if payload.get("account_generation") != account_generation:
             return False
-        if payload.get('status') in {'completed', 'suppressed', 'dead_letter'}:
+        if payload.get("status") in {"completed", "suppressed", "dead_letter"}:
             return False
         write_transaction.update(
             outbox_ref,
             {
-                'status': 'dead_letter',
-                'lease_token': None,
-                'updated_at': completion_time,
-                'last_error_text': sanitized_error,
-                'dead_letter_reason': 'malformed',
+                "status": "dead_letter",
+                "lease_token": None,
+                "updated_at": completion_time,
+                "last_error_text": sanitized_error,
+                "dead_letter_reason": "malformed",
             },
         )
         return True
 
-    if hasattr(client, 'transaction') and callable(getattr(client, 'transaction')):
-        txn = client.transaction()
-        if hasattr(firestore, 'transactional'):
-            return firestore.transactional(apply)(txn)
-        return apply(txn)
-    return apply(client)
+    if not hasattr(client, "transaction") or not callable(getattr(client, "transaction")):
+        raise RuntimeError("Firestore client does not support transactions; atomic dispatch required")
+
+    txn = client.transaction()
+    if hasattr(firestore, "transactional") and callable(getattr(firestore, "transactional")):
+        return firestore.transactional(apply)(txn)
+    return apply(txn)
 
 
 def list_candidate_integration_dispatches(
@@ -438,7 +442,7 @@ def list_candidate_integration_dispatches(
 
     client = _resolve_client(firestore_client)
     if client is None:
-        logger.warning('Firestore client unavailable for list_candidate_integration_dispatches')
+        logger.warning("Firestore client unavailable for list_candidate_integration_dispatches")
         return []
 
     try:
@@ -447,18 +451,18 @@ def list_candidate_integration_dispatches(
         clamped_limit = DEFAULT_QUERY_LIMIT
 
     query = (
-        client.collection('users')
+        client.collection("users")
         .document(cleaned_uid)
         .collection(CANDIDATE_INTEGRATION_OUTBOX_COLLECTION)
-        .where(filter=FieldFilter('account_generation', '==', account_generation))
-        .where(filter=FieldFilter('status', 'in', ['pending', 'failed', 'processing']))
+        .where(filter=FieldFilter("account_generation", "==", account_generation))
+        .where(filter=FieldFilter("status", "in", ["pending", "failed", "processing"]))
         .limit(clamped_limit)
     )
     rows = [_snapshot_dict(snapshot) for snapshot in query.stream()]
     safe_now = _ensure_utc(now) or datetime.now(timezone.utc)
     ready: list[dict[str, Any]] = []
     for row in rows:
-        available_at = row.get('available_at')
+        available_at = row.get("available_at")
         safe_available_at = _ensure_utc(available_at)
         if safe_available_at is not None and safe_available_at > safe_now:
             continue
@@ -467,11 +471,11 @@ def list_candidate_integration_dispatches(
 
 
 __all__ = [
-    'CANDIDATE_INTEGRATION_POLICY',
-    'claim_candidate_integration_dispatch',
-    'complete_candidate_integration_dispatch',
-    'db',
-    'dead_letter_malformed_candidate_integration',
-    'list_candidate_integration_dispatches',
-    'redrive_candidate_integration_dead_letter',
+    "CANDIDATE_INTEGRATION_POLICY",
+    "claim_candidate_integration_dispatch",
+    "complete_candidate_integration_dispatch",
+    "db",
+    "dead_letter_malformed_candidate_integration",
+    "list_candidate_integration_dispatches",
+    "redrive_candidate_integration_dead_letter",
 ]
