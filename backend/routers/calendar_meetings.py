@@ -1,9 +1,9 @@
-import logging
 from datetime import datetime, timezone
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import database.calendar_meetings as calendar_db
 from models.calendar_context import CalendarMeetingContext, MeetingParticipant
@@ -22,15 +22,27 @@ def _to_utc(dt: datetime) -> datetime:
 class StoreMeetingRequest(BaseModel):
     """Request to store/update a calendar meeting"""
 
-    calendar_event_id: str = Field(description="External calendar system ID (macOS/Google/Outlook event ID)")
-    calendar_source: str = Field(description="Source: 'macos_calendar', 'google_calendar', 'outlook_calendar'")
-    title: str = Field(description="Meeting title")
+    calendar_event_id: str = Field(
+        min_length=1, description="External calendar system ID (macOS/Google/Outlook event ID)"
+    )
+    calendar_source: str = Field(
+        min_length=1, description="Source: 'macos_calendar', 'google_calendar', 'outlook_calendar'"
+    )
+    title: str = Field(min_length=1, description="Meeting title")
     start_time: datetime = Field(description="Meeting start time")
     end_time: datetime = Field(description="Meeting end time")
     platform: Optional[str] = Field(default=None, description="Platform: 'Zoom', 'Teams', 'Google Meet', etc.")
     meeting_link: Optional[str] = Field(default=None, description="URL to join the meeting")
     participants: List[MeetingParticipant] = Field(default_factory=list, description="Meeting participants")
     notes: Optional[str] = Field(default=None, description="Meeting notes/description")
+
+    @field_validator("calendar_event_id", "calendar_source", "title")
+    @classmethod
+    def validate_not_blank(cls, v: str) -> str:
+        s = v.strip()
+        if not s:
+            raise ValueError("Field cannot be empty or whitespace only")
+        return s
 
 
 class StoreMeetingResponse(BaseModel):
@@ -41,7 +53,7 @@ class StoreMeetingResponse(BaseModel):
     message: str = "Meeting stored successfully"
 
 
-@router.post('/v1/calendar/meetings', response_model=StoreMeetingResponse, tags=['calendar'])
+@router.post("/v1/calendar/meetings", response_model=StoreMeetingResponse, tags=["calendar"])
 def store_calendar_meeting(
     request: StoreMeetingRequest,
     uid: str = Depends(auth.get_current_user_uid),
@@ -50,8 +62,13 @@ def store_calendar_meeting(
     Store or update a calendar meeting in Firestore.
     If a meeting with the same calendar_event_id and calendar_source exists, it will be updated.
     """
-    if not str(request.calendar_event_id or '').strip() or not str(request.calendar_source or '').strip():
-        raise HTTPException(status_code=422, detail="calendar_source and calendar_event_id are required")
+    if (
+        not str(request.calendar_event_id or "").strip()
+        or not str(request.calendar_source or "").strip()
+        or not str(request.title or "").strip()
+    ):
+        raise HTTPException(status_code=422, detail="calendar_source, calendar_event_id, and title are required")
+
     start_utc, end_utc = _to_utc(request.start_time), _to_utc(request.end_time)
     if end_utc <= start_utc:
         raise HTTPException(status_code=422, detail="end_time must be after start_time")
@@ -68,7 +85,7 @@ def store_calendar_meeting(
         calendar_source=request.calendar_source,
     )
     meeting_dict = meeting_context.model_dump()
-    meeting_dict['end_time'] = end_utc
+    meeting_dict["end_time"] = end_utc
     existing_meeting_id = calendar_db.get_meeting_id_by_calendar_event(
         uid, request.calendar_event_id, request.calendar_source
     )
@@ -83,7 +100,7 @@ def store_calendar_meeting(
     return StoreMeetingResponse(meeting_id=meeting_id, calendar_event_id=request.calendar_event_id)
 
 
-@router.get('/v1/calendar/meetings/{meeting_id}', response_model=CalendarMeetingContext, tags=['calendar'])
+@router.get("/v1/calendar/meetings/{meeting_id}", response_model=CalendarMeetingContext, tags=["calendar"])
 def get_calendar_meeting(
     meeting_id: str,
     uid: str = Depends(auth.get_current_user_uid),
@@ -102,15 +119,15 @@ def get_calendar_meeting(
         # safe id plus the exception type only: a ValidationError's str() renders sensitive
         # field input like the meeting title, participant emails, link, or notes.
         logger.warning(
-            'Malformed calendar meeting for uid=%s event_id=%s: %s',
+            "Malformed calendar meeting for uid=%s event_id=%s: %s",
             uid,
-            meeting.get('calendar_event_id'),
+            meeting.get("calendar_event_id"),
             type(exc).__name__,
         )
         raise HTTPException(status_code=404, detail="Meeting not found")
 
 
-@router.get('/v1/calendar/meetings', response_model=List[CalendarMeetingContext], tags=['calendar'])
+@router.get("/v1/calendar/meetings", response_model=List[CalendarMeetingContext], tags=["calendar"])
 def list_calendar_meetings(
     uid: str = Depends(auth.get_current_user_uid),
     start_date: Optional[datetime] = None,
@@ -118,7 +135,11 @@ def list_calendar_meetings(
     limit: CalendarMeetingsLimit = 50,
 ):
     """List calendar meetings within a date range"""
-    meetings = calendar_db.list_meetings(uid, start_date=start_date, end_date=end_date, limit=limit)
+    try:
+        meetings = calendar_db.list_meetings(uid, start_date=start_date, end_date=end_date, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     # Skip any malformed stored meeting rather than 500 the whole list, so one bad
     # record cannot hide every other meeting the user has. Log a safe identifier plus
     # the exception class only: a ValidationError's str() renders the field input_value,
@@ -126,9 +147,9 @@ def list_calendar_meetings(
     return CalendarMeetingContext.from_records(
         meetings,
         on_error=lambda record, exc: logger.warning(
-            'Skipping malformed calendar meeting for uid=%s event_id=%s: %s',
+            "Skipping malformed calendar meeting for uid=%s event_id=%s: %s",
             uid,
-            record.get('calendar_event_id'),
+            record.get("calendar_event_id"),
             type(exc).__name__,
         ),
     )
